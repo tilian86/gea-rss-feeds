@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # für state.json commit (verhindert auch disabled_inactivity)
   pages: write
   id-token: write
 
@@ -31,6 +31,18 @@ jobs:
 
       - name: Run scraper
         run: python scrape.py
+
+      - name: Commit state.json (falls geändert)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git add state.json
+            git commit -m "chore: update state.json [skip ci]"
+            git push
+          else
+            echo "state.json unverändert"
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
