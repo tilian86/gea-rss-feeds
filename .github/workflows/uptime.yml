@@ -1,0 +1,25 @@
+name: Uptime-Wächter
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Seiten prüfen (3 Versuche pro Seite)
+        run: |
+          fail=0
+          for url in https://tracetour.de https://meinanspruch24.de https://klarkreis.de; do
+            ok=0
+            for i in 1 2 3; do
+              code=$(curl -sL -o /dev/null --max-time 20 -w "%{http_code}" "$url" || echo 000)
+              if [ "$code" = "200" ]; then ok=1; break; fi
+              echo "Versuch $i für $url → HTTP $code, warte 15s…"
+              sleep 15
+            done
+            if [ "$ok" = "1" ]; then echo "OK  $url"; else echo "DOWN  $url (HTTP $code)"; fail=1; fi
+          done
+          exit $fail

@@ -59,3 +59,16 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      # GitHubs Pages-Deploy wirft gelegentlich transiente "Deployment failed, try
+      # again later"-Fehler (2× am 02./03.07.) — ein zweiter Versuch nach 45s
+      # erspart die Fehlalarm-Mails.
+      - name: Warten vor 2. Versuch
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 45
+
+      - name: Deploy (2. Versuch)
+        id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
