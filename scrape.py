@@ -23,17 +23,22 @@ FEEDS = {
         "title": "GEA – Reutlingen",
         "description": "Nachrichten aus dem Ressort Reutlingen des Reutlinger General-Anzeigers",
         "link": "https://www.gea.de/reutlingen.html",
+        # Die Übersicht zeigt nur einen Teil — die Stadtteil-Seiten haben viel mehr
+        "unterseiten": r"^/reutlingen/[a-z0-9-]+\.html$",
     },
     "tuebingen": {
         "url": "https://www.gea.de/neckar-alb/kreis-tuebingen.html",
         "title": "GEA – Kreis Tübingen",
         "description": "Nachrichten aus dem Ressort Kreis Tübingen des Reutlinger General-Anzeigers",
         "link": "https://www.gea.de/neckar-alb/kreis-tuebingen.html",
+        # Gemeinde-Seiten (Tübingen, Mössingen, Kusterdingen …) — viele Artikel stehen nur dort
+        "unterseiten": r"^/neckar-alb/kreis-tuebingen/[a-z0-9-]+\.html$",
     },
 }
 
 BASE_URL = "https://www.gea.de"
 OUTPUT_DIR = "feeds"
+MAX_EINTRAEGE = 150  # je Feed die neuesten — mit den Unterseiten kämen sonst 300+ (bis Monate alt)
 STATE_FILE = "state.json"  # persistente "wann zum ersten Mal gesehen"-Map (im Repo)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) GEA-RSS-Generator/1.0"
@@ -67,11 +72,42 @@ def prune_state(state: dict, days: int = 90) -> dict:
     }
 
 
-def scrape_articles(url: str) -> list[dict]:
-    """Scrapt Artikel-Teaser von einer GEA-Ressortseite."""
+def arid_von(url: str) -> str:
+    m = re.search(r"_arid,(\d+)", url or "")
+    return m.group(1) if m else ""
+
+
+def scrape_feed(config: dict) -> list[dict]:
+    """Übersicht + Unterseiten (Gemeinden/Stadtteile). GEA führt denselben Artikel unter
+    mehreren Adressen (tuebingen_artikel, kusterdingen_artikel, …) — gleiche arid = ein Artikel."""
+    soup = fetch(config["url"])
+    articles = scrape_articles(soup)
+    muster = config.get("unterseiten")
+    if muster:
+        unterseiten = sorted({a["href"] for a in soup.select("a[href]") if re.match(muster, a["href"])})
+        for pfad in unterseiten:
+            try:
+                articles += scrape_articles(fetch(BASE_URL + pfad))
+            except Exception as e:
+                print(f"  ! {pfad}: {e}")
+        print(f"  → {len(unterseiten)} Unterseiten gelesen")
+    einmal, gesehen = [], set()
+    for a in articles:
+        schluessel = a["arid"] or a["link"]
+        if schluessel not in gesehen:
+            gesehen.add(schluessel)
+            einmal.append(a)
+    return einmal
+
+
+def fetch(url: str) -> BeautifulSoup:
     resp = requests.get(url, headers=HEADERS, timeout=30)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    return BeautifulSoup(resp.text, "html.parser")
+
+
+def scrape_articles(soup: BeautifulSoup) -> list[dict]:
+    """Scrapt Artikel-Teaser von einer GEA-Seite."""
 
     articles = []
     seen_urls = set()
@@ -134,14 +170,37 @@ def build_rss(feed_config: dict, articles: list[dict], state: dict) -> str:
     SubElement(channel, "lastBuildDate").text = now_str
     SubElement(channel, "generator").text = "GEA RSS Feed Generator"
 
+    # Schon bekannte Artikel behalten ihre alte Adresse (gleiche guid → Feed-Reader sehen sie nicht doppelt).
+    # Bei mehreren Adressen je arid gilt die zuerst gesehene.
+    bekannt = {}
+    for guid, iso in sorted(state.items(), key=lambda kv: kv[1]):
+        a = arid_von(guid)
+        if a and a not in bekannt:
+            bekannt[a] = guid
+    # Zeitachse aus bekannten Artikeln: arids steigen mit der Zeit
+    achse = sorted((int(a), datetime.fromisoformat(state[g]).timestamp()) for a, g in bekannt.items())
+
+    def geschaetzt(arid: str) -> str:
+        """Erstmals gesehen, aber älter als schon Bekanntes (stand bisher nur auf einer Unterseite):
+        Datum aus den Nachbar-arids schätzen statt „jetzt“ — sonst wirkt Wochenaltes brandneu."""
+        if not arid or not achse or int(arid) > achse[-1][0]:
+            return now_iso
+        x = int(arid)
+        unten = max((p for p in achse if p[0] <= x), default=achse[0])
+        oben = min((p for p in achse if p[0] >= x), default=achse[-1])
+        ts = unten[1] if oben[0] == unten[0] else unten[1] + (oben[1] - unten[1]) * (x - unten[0]) / (oben[0] - unten[0])
+        return datetime.fromtimestamp(min(ts, now_dt.timestamp()), timezone.utc).replace(microsecond=0).isoformat()
+
     # Artikel nach „first_seen"-Datum sortieren (neueste zuerst) für RSS-Konvention
     for article in articles:
+        if article["arid"] in bekannt:
+            article["guid"] = article["link"] = bekannt[article["arid"]]
         guid = article["guid"]
         if guid not in state:
-            state[guid] = now_iso
+            state[guid] = geschaetzt(article["arid"])
         article["_first_seen"] = state[guid]
 
-    articles_sorted = sorted(articles, key=lambda a: a["_first_seen"], reverse=True)
+    articles_sorted = sorted(articles, key=lambda a: a["_first_seen"], reverse=True)[:MAX_EINTRAEGE]
 
     for article in articles_sorted:
         item = SubElement(channel, "item")
@@ -176,7 +235,7 @@ def main():
     for name, config in FEEDS.items():
         print(f"Scraping {config['title']}...")
         try:
-            articles = scrape_articles(config["url"])
+            articles = scrape_feed(config)
             print(f"  → {len(articles)} Artikel gefunden")
 
             xml = build_rss(config, articles, state)
