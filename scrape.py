@@ -34,6 +34,22 @@ FEEDS = {
         # Gemeinde-Seiten (Tübingen, Mössingen, Kusterdingen …) — viele Artikel stehen nur dort
         "unterseiten": r"^/neckar-alb/kreis-tuebingen/[a-z0-9-]+\.html$",
     },
+    # Umland für Feedfunks „🎯 Für dich“ (Claude sucht dort Perlen) — nicht als Pflicht-Feed gedacht
+    "region": {
+        "url": "https://www.gea.de/neckar-alb/ueber-die-alb.html",
+        "title": "GEA – Region (Alb, Ermstal, Echaz, Kultur, Wirtschaft)",
+        "description": "Umland-Ressorts des Reutlinger General-Anzeigers",
+        "link": "https://www.gea.de/neckar-alb.html",
+        "unterseiten": r"^/neckar-alb/ueber-die-alb/[a-z0-9-]+\.html$",
+        "weitere": [
+            ("https://www.gea.de/neckar-alb/neckar-erms.html", r"^/neckar-alb/neckar-erms/[a-z0-9-]+\.html$"),
+            ("https://www.gea.de/neckar-alb/pfullingen-eningen-lichtenstein.html",
+             r"^/neckar-alb/pfullingen-eningen-lichtenstein/[a-z0-9-]+\.html$"),
+            ("https://www.gea.de/neckar-alb/kultur-in-der-region.html", None),
+            ("https://www.gea.de/neckar-alb/wirtschaft-in-der-region.html", None),
+            ("https://www.gea.de/themenwelten/freizeit-fitness.html", None),
+        ],
+    },
 }
 
 BASE_URL = "https://www.gea.de"
@@ -80,17 +96,22 @@ def arid_von(url: str) -> str:
 def scrape_feed(config: dict) -> list[dict]:
     """Übersicht + Unterseiten (Gemeinden/Stadtteile). GEA führt denselben Artikel unter
     mehreren Adressen (tuebingen_artikel, kusterdingen_artikel, …) — gleiche arid = ein Artikel."""
-    soup = fetch(config["url"])
-    articles = scrape_articles(soup)
-    muster = config.get("unterseiten")
-    if muster:
-        unterseiten = sorted({a["href"] for a in soup.select("a[href]") if re.match(muster, a["href"])})
-        for pfad in unterseiten:
-            try:
-                articles += scrape_articles(fetch(BASE_URL + pfad))
-            except Exception as e:
-                print(f"  ! {pfad}: {e}")
-        print(f"  → {len(unterseiten)} Unterseiten gelesen")
+    articles = []
+    for url, muster in [(config["url"], config.get("unterseiten")), *config.get("weitere", [])]:
+        try:
+            soup = fetch(url)
+        except Exception as e:
+            print(f"  ! {url}: {e}")
+            continue
+        articles += scrape_articles(soup)
+        if muster:
+            unterseiten = sorted({a["href"] for a in soup.select("a[href]") if re.match(muster, a["href"])})
+            for pfad in unterseiten:
+                try:
+                    articles += scrape_articles(fetch(BASE_URL + pfad))
+                except Exception as e:
+                    print(f"  ! {pfad}: {e}")
+            print(f"  → {len(unterseiten)} Unterseiten gelesen")
     einmal, gesehen = [], set()
     for a in articles:
         schluessel = a["arid"] or a["link"]
@@ -262,6 +283,7 @@ def main():
 <ul>
   <li><a href="reutlingen.xml">GEA – Reutlingen</a></li>
   <li><a href="tuebingen.xml">GEA – Kreis Tübingen</a></li>
+  <li><a href="region.xml">GEA – Region (Alb, Ermstal, Echaz, Kultur, Wirtschaft)</a></li>
 </ul>
 <p>Zuletzt aktualisiert: {now}</p>
 </body>
